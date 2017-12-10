@@ -11,6 +11,8 @@ int set_servo(Servo, int);
 int read_analog();
 int get_temp(int);
 void handleWebReq_RootPath();
+void handleWebReq_Received();
+void handle_control();
 
 // pio run -e nodemcuv2 -t upload --upload-port 192.168.1.113 
 // pio run -e nodemcuv2 -t upload --upload-port monEsp
@@ -20,7 +22,12 @@ const char* password = "Chowfornow3344";
 IPAddress ip(192, 168, 1, 113);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
-ESP8266WebServer server(80);
+
+ESP8266WebServer web_server(80);
+WiFiServer control_server(1234);
+WiFiClient control_handler;
+
+Servo control_servo;
 
 int servo_pin = D4;
 int ADC_Counts = 0;
@@ -28,7 +35,9 @@ int ADC_Counts = 0;
 int desired_temp = 70;
 int current_temp = 70;
 int last_temp = current_temp;
-Servo control_servo;
+
+char receive_buffer[4096];
+
 void setup() {
   /* code */
 
@@ -46,14 +55,19 @@ void setup() {
   ArduinoOTA.setHostname("monEsp"); // give an name to our module
   ArduinoOTA.begin(); // OTA initialization
 
-  server.on("/", handleWebReq_RootPath);
-  server.begin();
+  web_server.on("/", handleWebReq_RootPath);
+  web_server.on("/received", handleWebReq_Received);
+  web_server.begin();
+
+  control_server.begin();
+  control_handler =control_server.available();
 }
 
 void loop() {
 
   ArduinoOTA.handle();
-  server.handleClient();
+  web_server.handleClient();
+  handle_control();
   // Wait a bit before scanning again
   delay(1000);
   /*for (size_t i = 0; i < 180; i++) {
@@ -69,6 +83,33 @@ void loop() {
   Serial.println(current_temp);
   }
 
+
+void handle_control()
+{
+  WiFiClient client;
+  char last_char = 0;
+  int i = 0;
+  if(!client.connected())
+  {
+    client = control_server.available();
+  }
+  if(client.connected())
+  {
+    if(client.available() > 0)
+    {
+      while ((last_char = client.read()) != -1 && i<20) {
+        /* code */
+
+        receive_buffer[i] = last_char;
+        i++;
+      }
+      for (size_t j = 0; j < i; j++) {
+        /* code */
+        control_server.write('j');//receive_buffer[j]);
+      }
+    }
+  }
+}
 
 int set_servo(Servo servo, int pos)
 {
@@ -102,5 +143,10 @@ int get_temp(int input)
 void handleWebReq_RootPath(){
   char webreply[3];
   sprintf(webreply, "%d",current_temp);
-  server.send(200, "text/plain", String(current_temp));
+  web_server.send(200, "text/plain", webreply);
+}
+
+void handleWebReq_Received(){
+  char webreply[3];
+  web_server.send(200, "text/plain", String(receive_buffer));
 }

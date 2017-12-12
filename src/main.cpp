@@ -4,15 +4,19 @@
 #include <ArduinoOTA.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WebServer.h>
-#include <String.h>
+#include <string>
 #include <servo.h>
+#define TEXT_BUFF_SIZE 512
 
 int set_servo(Servo, int);
 int read_analog();
 int get_temp(int);
 void handleWebReq_RootPath();
 void handleWebReq_Received();
-void handle_control();
+void page_print(String);
+bool handle_control();
+void handle_temp();
+bool boot_wifi(bool on);
 
 // pio run -e nodemcuv2 -t upload --upload-port 192.168.1.113 
 // pio run -e nodemcuv2 -t upload --upload-port monEsp
@@ -29,28 +33,21 @@ WiFiClient control_handler;
 
 Servo control_servo;
 
-int servo_pin = D4;
-int ADC_Counts = 0;
+int   servo_pin = D4;
+int   ADC_Counts = 0;
 
-int desired_temp = 70;
-int current_temp = 70;
-int last_temp = current_temp;
+int   desired_temp = 70;
+int   current_temp = 70;
+int   last_temp = current_temp;
 
-char receive_buffer[4096];
+int   servo_command = 0,last_command = servo_command;
+
+String webpage_output;
+
 
 void setup() {
-  /* code */
 
-  control_servo.attach(servo_pin);
-  Serial.begin(115200);
-
-  WiFi.begin(ssid, password);
-  WiFi.config(ip, gateway, subnet);
-
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    delay(3000);
-    ESP.restart();
-  }
+  boot_wifi(true);
 
   ArduinoOTA.setHostname("monEsp"); // give an name to our module
   ArduinoOTA.begin(); // OTA initialization
@@ -61,60 +58,89 @@ void setup() {
 
   control_server.begin();
   control_handler =control_server.available();
+
+  control_servo.attach(servo_pin);
+  set_servo(control_servo,0);
 }
 
 void loop() {
-
   ArduinoOTA.handle();
   web_server.handleClient();
-  handle_control();
-  // Wait a bit before scanning again
+  if(handle_control() && last_command != servo_command)
+  {
+
+    set_servo(control_servo, servo_command);
+    last_command = servo_command;
+  }
+  handle_temp();
   delay(1000);
-  /*for (size_t i = 0; i < 180; i++) {
-    set_servo(control_servo,i);
-    delay(20);
-  }*/
-  last_temp     = current_temp;
-  current_temp  = get_temp(read_analog());
-  current_temp  = (current_temp + last_temp)/2;
-  Serial.print("ip: ");
-  Serial.println(ip);
-  Serial.print("Temp: ");
-  Serial.println(current_temp);
-  }
 
+}
 
-void handle_control()
+bool boot_wifi(bool on)
 {
-  WiFiClient client;
-  char last_char = 0;
-  int i = 0;
-  if(!client.connected())
+  if(on)
   {
-    client = control_server.available();
-  }
-  if(client.connected())
-  {
-    if(client.available() > 0)
-    {
-      while ((last_char = client.read()) != -1 && i<20) {
-        /* code */
+    WiFi.begin(ssid, password);
+    WiFi.config(ip, gateway, subnet);
 
-        receive_buffer[i] = last_char;
-        i++;
-      }
-      for (size_t j = 0; j < i; j++) {
-        /* code */
-        control_server.write('j');//receive_buffer[j]);
-      }
+    while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+      delay(3000);
+      ESP.restart();
     }
+    return true;
+  }else{
+    WiFi.disconnect();
   }
 }
 
-int set_servo(Servo servo, int pos)
+void handle_temp()
 {
-  servo.write(pos);                  // tell servo to go to position in variable 'pos'
-  return pos;
+  last_temp     = current_temp;
+  current_temp  = get_temp(read_analog());
+  current_temp  = (current_temp + last_temp)/2;
+}
+
+bool handle_control()
+{
+  WiFiClient client;
+  String receive_string;
+  char last_char = 0;
+  int i = 0;
+  int receive_size = 0;
+
+  if(!client.connected())
+  {client = control_server.available(); }
+  if(client.connected() && (receive_size = client.available()) > 0)
+  {
+  char  receive_buffer[TEXT_BUFF_SIZE];
+  char  send_buffer[TEXT_BUFF_SIZE];
+    while (i<receive_size && i<TEXT_BUFF_SIZE)
+    {
+      last_char = client.read();
+      receive_buffer[i] = last_char;
+      i++;
+    }
+
+    client.print(receive_buffer);
+    client.println();
+    client.stopAll();
+
+    receive_string = String(receive_buffer);
+    receive_string.trim();
+    i = 0;
+    while((i = receive_string.indexOf('{'))!= -1)
+    {
+      if(receive_string.substring(i+1,receive_string.indexOf(':')) == "set_servo")
+      {
+        servo_command = receive_string.substring(receive_string.indexOf(':')+1,receive_string.indexOf('}')).toInt();
+      }
+      receive_string = receive_string.substring(receive_string.indexOf('}'));
+    }
+    return true;
+  }
+
+  return false;
 }
 
 int read_analog()
@@ -131,6 +157,14 @@ int read_analog()
   return ADC_Counts+10;
 }
 
+int set_servo(Servo servo, int pos)
+{
+  pos = pos * 1.8;
+  page_print("\n Set Servo: "+String(pos));
+  servo.write(180-pos);
+  return pos;
+}
+
 int get_temp(int input)
 {
   float vAtAnalog = input * 3.3;
@@ -140,6 +174,11 @@ int get_temp(int input)
   return temperatureF;
 }
 
+void page_print(String publish_string)
+{
+  webpage_output.concat(publish_string);
+}
+
 void handleWebReq_RootPath(){
   char webreply[3];
   sprintf(webreply, "%d",current_temp);
@@ -147,6 +186,5 @@ void handleWebReq_RootPath(){
 }
 
 void handleWebReq_Received(){
-  char webreply[3];
-  web_server.send(200, "text/plain", String(receive_buffer));
+  web_server.send(200, "text/plain", webpage_output);
 }
